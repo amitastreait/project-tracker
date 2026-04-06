@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomApplication xmlns="http://soap.sforce.com/2006/04/metadata">
+    <brand>
+        <headerColor>#7456F1</headerColor>
+        <shouldOverrideOrgTheme>true</shouldOverrideOrgTheme>
+    </brand>
+    <formFactors>Small</formFactors>
+    <formFactors>Large</formFactors>
+    <isNavAutoTempTabsDisabled>false</isNavAutoTempTabsDisabled>
+    <isNavPersonalizationDisabled>false</isNavPersonalizationDisabled>
+    <isNavTabPersistenceDisabled>false</isNavTabPersistenceDisabled>
+    <isOmniPinnedViewEnabled>false</isOmniPinnedViewEnabled>
+    <label>Job Scheduler</label>
+    <navType>Console</navType>
+    <tabs>JobPipelineRun__c</tabs>
+    <tabs>JobExecutionLog__c</tabs>
+    <tabs>JobStepExecution__c</tabs>
+    <tabs>standard-report</tabs>
+    <tabs>standard-Dashboard</tabs>
+    <uiType>Lightning</uiType>
+    <utilityBar>Job_Scheduler_UtilityBar</utilityBar>
+    <workspaceConfig>
+        <mappings>
+            <tab>JobExecutionLog__c</tab>
+        </mappings>
+        <mappings>
+            <tab>JobPipelineRun__c</tab>
+        </mappings>
+        <mappings>
+            <tab>JobStepExecution__c</tab>
+        </mappings>
+        <mappings>
+            <tab>standard-Dashboard</tab>
+        </mappings>
+        <mappings>
+            <tab>standard-report</tab>
+        </mappings>
+    </workspaceConfig>
+</CustomApplication>

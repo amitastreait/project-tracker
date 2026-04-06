@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>RetryOnlyOnExceptions__c</fullName>
+    <defaultValue>false</defaultValue>
+    <description>When true, only retries if an Apex exception was thrown. When false, retries on any failure including data-level errors.</description>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <label>Retry Only On Exceptions</label>
+    <type>Checkbox</type>
+</CustomField>

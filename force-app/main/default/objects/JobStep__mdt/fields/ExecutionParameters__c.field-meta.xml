@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>ExecutionParameters__c</fullName>
+    <description>JSON key-value map of parameters passed to the job via JobExecutionContext.parameters at runtime. Example: {&quot;batchSize&quot;:500,&quot;filterDate&quot;:&quot;2024-01-01&quot;}</description>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <label>Execution Parameters (JSON)</label>
+    <length>32768</length>
+    <type>LongTextArea</type>
+    <visibleLines>4</visibleLines>
+</CustomField>

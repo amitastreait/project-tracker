@@ -1,0 +1,20 @@
+{
+  "packageDirectories": [
+    {
+      "versionName": "ver 0.1",
+      "versionNumber": "0.1.0.NEXT",
+      "path": "force-app",
+      "default": true,
+      "package": "Project Tracker App",
+      "versionDescription": ""
+    }
+  ],
+  "name": "project-tracker",
+  "namespace": "",
+  "sfdcLoginUrl": "https://login.salesforce.com",
+  "sourceApiVersion": "66.0",
+  "packageAliases": {
+    "Project Tracker App": "0HogK00000019FlSAI",
+    "Project Tracker App@0.1.0-1": "04tgK000000ArCjQAK"
+  }
+}

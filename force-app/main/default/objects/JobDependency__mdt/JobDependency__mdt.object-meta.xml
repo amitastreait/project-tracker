@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>Defines a directed edge in the pipeline DAG. StepToRun__c will not execute until DependsOnStep__c is Completed. Multiple records with the same StepToRun__c create an AND-join.</description>
+    <label>Job Dependency</label>
+    <pluralLabel>Job Dependencies</pluralLabel>
+    <visibility>Public</visibility>
+</CustomObject>

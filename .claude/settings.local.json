@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sf project:*)",
+      "Bash(python3 -c \":*)",
+      "Bash(python3 -c ':*)",
+      "Bash(sf apex:*)",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); tests=data.get\\('result',{}\\).get\\('tests',[]\\); [print\\(t.get\\('methodName'\\), t.get\\('outcome'\\), t.get\\('message',''\\)\\) for t in tests]\")",
+      "Bash(grep -l \"required>true\" force-app/main/default/objects/JobPipelineRun__c/fields/*.field-meta.xml force-app/main/default/objects/JobStepExecution__c/fields/*.field-meta.xml force-app/main/default/objects/JobExecutionLog__c/fields/*.field-meta.xml)"
+    ]
+  }
+}

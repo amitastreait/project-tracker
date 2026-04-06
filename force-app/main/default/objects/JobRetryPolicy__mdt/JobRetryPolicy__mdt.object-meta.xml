@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>Reusable retry policy assigned to job steps. Controls max attempts, delay between retries, and which exception types are retryable.</description>
+    <label>Job Retry Policy</label>
+    <pluralLabel>Job Retry Policies</pluralLabel>
+    <visibility>Public</visibility>
+</CustomObject>

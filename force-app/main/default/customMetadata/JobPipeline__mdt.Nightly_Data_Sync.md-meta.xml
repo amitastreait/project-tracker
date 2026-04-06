@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Nightly Data Sync</label>
+    <protected>false</protected>
+    <values>
+        <field>IsActive__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>CronExpression__c</field>
+        <value xsi:type="xsd:string">0 0 2 * * ?</value>
+    </values>
+    <values>
+        <field>NotificationEmail__c</field>
+        <value xsi:type="xsd:string">admin@example.com</value>
+    </values>
+    <values>
+        <field>MaxPipelineRuntime__c</field>
+        <value xsi:type="xsd:double">120.0</value>
+    </values>
+    <values>
+        <field>OnStepFailure__c</field>
+        <value xsi:type="xsd:string">AbortPipeline</value>
+    </values>
+    <values>
+        <field>MaxConcurrentSteps__c</field>
+        <value xsi:type="xsd:double">10.0</value>
+    </values>
+</CustomMetadata>

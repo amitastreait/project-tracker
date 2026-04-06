@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+	<types>
+		<members>Job_Scheduler</members>
+		<members>Project_Tracker</members>
+		<name>CustomApplication</name>
+	</types>
+	<types>
+		<members>JobCompletionEvent__e</members>
+		<members>JobDependency__mdt</members>
+		<members>JobExecutionLog__c</members>
+		<members>JobPipelineRun__c</members>
+		<members>JobPipeline__mdt</members>
+		<members>JobRetryPolicy__mdt</members>
+		<members>JobStepExecution__c</members>
+		<members>JobStep__mdt</members>
+		<members>Project_Task__c</members>
+		<members>Project__c</members>
+		<name>CustomObject</name>
+	</types>
+	<types>
+		<members>JobExecutionLog__c</members>
+		<members>JobPipelineRun__c</members>
+		<members>JobStepExecution__c</members>
+		<members>Project__c</members>
+		<name>CustomTab</name>
+	</types>
+	<types>
+		<members>Project_Tracker_UtilityBar</members>
+		<name>FlexiPage</name>
+	</types>
+	<types>
+		<members>JobDependency__mdt-Job Dependency Layout</members>
+		<members>JobExecutionLog__c-Job Execution Log Layout</members>
+		<members>JobPipelineRun__c-Job Pipeline Run Layout</members>
+		<members>JobPipeline__mdt-Job Pipeline Layout</members>
+		<members>JobRetryPolicy__mdt-Job Retry Policy Layout</members>
+		<members>JobStepExecution__c-Job Step Execution Layout</members>
+		<members>JobStep__mdt-Job Step Layout</members>
+		<members>Project_Task__c-Project Task Layout</members>
+		<members>Project__c-Project Layout</members>
+		<name>Layout</name>
+	</types>
+	<types>
+		<members>Job_Scheduler_Permissions</members>
+		<members>Project_Tracking_Permission_Set</members>
+		<name>PermissionSet</name>
+	</types>
+	<version>66.0</version>
+</Package>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>OnStepFailure__c</fullName>
+    <description>Controls pipeline behaviour when a step fails after exhausting retries. AbortPipeline halts immediately; ContinueOnError keeps running independent branches.</description>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <label>On Step Failure</label>
+    <required>true</required>
+    <type>Picklist</type>
+    <valueSet>
+        <restricted>true</restricted>
+        <valueSetDefinition>
+            <sorted>false</sorted>
+            <value>
+                <fullName>AbortPipeline</fullName>
+                <default>true</default>
+                <label>Abort Pipeline</label>
+            </value>
+            <value>
+                <fullName>ContinueOnError</fullName>
+                <default>false</default>
+                <label>Continue On Error</label>
+            </value>
+        </valueSetDefinition>
+    </valueSet>
+</CustomField>

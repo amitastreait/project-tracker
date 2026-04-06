@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>PipelineRun__c</fullName>
+    <description>Parent pipeline run this step execution belongs to.</description>
+    <label>Pipeline Run</label>
+    <referenceTo>JobPipelineRun__c</referenceTo>
+    <relationshipLabel>Step Executions</relationshipLabel>
+    <relationshipName>Step_Executions</relationshipName>
+    <relationshipOrder>0</relationshipOrder>
+    <reparentableMasterDetail>false</reparentableMasterDetail>
+    <trackTrending>false</trackTrending>
+    <type>MasterDetail</type>
+    <writeRequiresMasterRead>false</writeRequiresMasterRead>
+</CustomField>

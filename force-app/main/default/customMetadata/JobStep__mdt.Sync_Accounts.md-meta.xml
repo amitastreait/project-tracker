@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Sync Accounts</label>
+    <protected>false</protected>
+    <values>
+        <field>Pipeline__c</field>
+        <value xsi:type="xsd:string">Nightly_Data_Sync</value>
+    </values>
+    <values>
+        <field>ApexClassName__c</field>
+        <value xsi:type="xsd:string">SyncAccountsJob</value>
+    </values>
+    <values>
+        <field>ExecutionMode__c</field>
+        <value xsi:type="xsd:string">Batch</value>
+    </values>
+    <values>
+        <field>BatchSize__c</field>
+        <value xsi:type="xsd:double">200.0</value>
+    </values>
+    <values>
+        <field>ExecutionOrder__c</field>
+        <value xsi:type="xsd:double">10.0</value>
+    </values>
+    <values>
+        <field>IsActive__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>TimeoutMinutes__c</field>
+        <value xsi:type="xsd:double">30.0</value>
+    </values>
+    <values>
+        <field>BranchGroup__c</field>
+        <value xsi:nil="true"/>
+    </values>
+    <values>
+        <field>RetryPolicy__c</field>
+        <value xsi:type="xsd:string">Standard_Retry</value>
+    </values>
+    <values>
+        <field>ExecutionParameters__c</field>
+        <value xsi:nil="true"/>
+    </values>
+</CustomMetadata>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>ApexClassName__c</fullName>
+    <description>Apex class name copied from CMT at dispatch time. Preserved for audit even if the CMT record changes later.</description>
+    <externalId>false</externalId>
+    <label>Apex Class Name</label>
+    <length>255</length>
+    <required>false</required>
+    <trackTrending>false</trackTrending>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

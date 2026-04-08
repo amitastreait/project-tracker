@@ -11,7 +11,7 @@
  *   from within executeBatch() if they want accurate counts.
  *   Alternatively they can update ctx.sharedContext and this wrapper will persist it.
  *
- * Note: retry logic will be wired in during Phase 4 (JobRetryHandler).
+ * On failure: delegates to JobRetryHandler which decides whether to retry or permanently fail.
  */
 public without sharing class JobBatchWrapper implements Database.Batchable<SObject>, Database.Stateful {
 
@@ -57,30 +57,7 @@ public without sharing class JobBatchWrapper implements Database.Batchable<SObje
             }
         }
 
-        // ── Update the step execution record ─────────────────────────────────
-        JobStepExecution__c stepExec = [
-            SELECT Id, Status__c, RecordsProcessed__c, RecordsFailed__c
-            FROM   JobStepExecution__c
-            WHERE  Id = :ctx.stepExecutionId
-            LIMIT  1
-        ];
-
-        Boolean isSuccess = (firstError == null);
-        stepExec.Status__c          = isSuccess ? 'Completed' : 'Failed';
-        stepExec.EndTime__c         = System.now();
-        stepExec.ErrorMessage__c    = firstError;
-
-        // If the job updated counts directly on the record, those will be in
-        // stepExec already. If not, stamp the wrapper's accumulators.
-        if (stepExec.RecordsProcessed__c == null) {
-            stepExec.RecordsProcessed__c = totalProcessed;
-        }
-        if (stepExec.RecordsFailed__c == null) {
-            stepExec.RecordsFailed__c = totalFailed;
-        }
-        update stepExec;
-
-        // Persist shared context changes from finishBatch()
+        // ── Always persist shared context (even on failure — partial results are useful) ──
         if (ctx.sharedContext != null && !ctx.sharedContext.isEmpty()) {
             update new JobPipelineRun__c(
                 Id             = ctx.pipelineRunId,
@@ -88,14 +65,38 @@ public without sharing class JobBatchWrapper implements Database.Batchable<SObje
             );
         }
 
-        // ── Publish completion event to advance the pipeline ─────────────────
-        EventBus.publish(new JobCompletionEvent__e(
-            PipelineRunId__c     = String.valueOf(ctx.pipelineRunId),
-            StepExecutionId__c   = String.valueOf(ctx.stepExecutionId),
-            StepDeveloperName__c = ctx.stepDeveloperName,
-            IsSuccess__c         = isSuccess,
-            ErrorMessage__c      = firstError,
-            RecordsProcessed__c  = totalProcessed
-        ));
+        // ── Stamp record counts; preserve values the job set directly on the record ───
+        JobStepExecution__c stepExec = [
+            SELECT Id, RecordsProcessed__c, RecordsFailed__c
+            FROM   JobStepExecution__c
+            WHERE  Id = :ctx.stepExecutionId
+            LIMIT  1
+        ];
+        if (stepExec.RecordsProcessed__c == null) stepExec.RecordsProcessed__c = totalProcessed;
+        if (stepExec.RecordsFailed__c    == null) stepExec.RecordsFailed__c    = totalFailed;
+        update stepExec;
+
+        Boolean isSuccess = (firstError == null);
+
+        if (isSuccess) {
+            // ── Success path ──────────────────────────────────────────────────
+            update new JobStepExecution__c(
+                Id          = ctx.stepExecutionId,
+                Status__c   = 'Completed',
+                EndTime__c  = System.now()
+            );
+            EventBus.publish(new JobCompletionEvent__e(
+                PipelineRunId__c     = String.valueOf(ctx.pipelineRunId),
+                StepExecutionId__c   = String.valueOf(ctx.stepExecutionId),
+                StepDeveloperName__c = ctx.stepDeveloperName,
+                IsSuccess__c         = true,
+                RecordsProcessed__c  = totalProcessed
+            ));
+        } else {
+            // ── Failure path — delegate to retry handler ──────────────────────
+            // RetryHandler owns Status__c, EndTime__c, ErrorMessage__c and decides
+            // whether to retry (Retrying) or permanently fail (Failed + publishes event)
+            JobRetryHandler.handleFailure(ctx, firstError);
+        }
     }
 }

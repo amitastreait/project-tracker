@@ -10,9 +10,8 @@
  *   • Persist any changes to sharedContext back to JobPipelineRun__c.ContextData__c.
  *   • Publish JobCompletionEvent__e to re-trigger JobOrchestrator via Platform Event.
  *
- * Note: retry logic lives in JobRetryHandler (Phase 4). In this Phase 2 implementation
- * a failed step publishes IsSuccess=false immediately without retry evaluation.
- * JobRetryHandler will be wired in during Phase 4 before the retry flow is complete.
+ * On failure: delegates to JobRetryHandler which decides whether to retry (Retrying status)
+ * or permanently fail (Failed status + publishes JobCompletionEvent__e).
  */
 public without sharing class JobQueueableWrapper implements Queueable {
 
@@ -43,13 +42,15 @@ public without sharing class JobQueueableWrapper implements Queueable {
             publishEvent(true, null, 0);
 
         } catch (Exception ex) {
-            stepExec.Status__c          = 'Failed';
-            stepExec.EndTime__c         = System.now();
-            stepExec.ErrorMessage__c    = ex.getMessage();
+            // Store the stack trace (RetryHandler owns Status, EndTime, ErrorMessage)
             stepExec.ErrorStackTrace__c = ex.getStackTraceString();
             update stepExec;
 
-            publishEvent(false, ex.getMessage(), 0);
+            // Persist any partial sharedContext written before the exception
+            persistSharedContext();
+
+            // Delegate to retry handler — retries if policy allows, otherwise marks Failed
+            JobRetryHandler.handleFailure(ctx, ex.getMessage());
         }
     }
 

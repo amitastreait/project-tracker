@@ -17,6 +17,7 @@
 11. [Monitoring & Troubleshooting](#11-monitoring--troubleshooting)
 12. [Configuration Reference](#12-configuration-reference)
 13. [Governor Limit Handling](#13-governor-limit-handling)
+14. [Retry, Timeout & Failure Notifications](#14-retry-timeout--failure-notifications)
 
 ---
 
@@ -49,11 +50,19 @@ The Job Scheduler is a **config-driven Apex job orchestration framework**. Execu
 │                         ORCHESTRATION ENGINE                        │
 │                                                                     │
 │  JobPipelineScheduler  ──►  JobOrchestrator  ──►  JobDispatcher    │
-│  (entry point)              (DAG evaluator)        (job launcher)   │
+│  (entry point)              (DAG evaluator         (job launcher)   │
+│                              + timeout watchdog)                    │
 │                                 ▲                                   │
 │                                 │ re-triggers via Platform Event    │
 │  JobCompletionTrigger  ◄────────┘                                   │
 │  (on JobCompletionEvent__e)                                         │
+│                                                                     │
+│  On step failure:                                                   │
+│  JobRetryHandler ──► JobRetryDispatchQueueable  (immediate retry)   │
+│                 └──► JobRetryScheduler          (delayed retry)     │
+│                                                                     │
+│  On pipeline failure:                                               │
+│  JobOrchestrator ──► JobNotificationService     (failure email)     │
 └─────────────────────────────────────────────────────────────────────┘
                                 │
                                 │ executes
@@ -93,6 +102,8 @@ The Job Scheduler is a **config-driven Apex job orchestration framework**. Execu
 | Parallel steps | Same `BranchGroup__c` value → dispatched simultaneously |
 | AND-join | Multiple `JobDependency__mdt` edges to the same `StepToRun__c` |
 | Retry | `JobRetryPolicy__mdt` per step — max attempts, delay, exception filter |
+| Step timeout watchdog | `TimeoutMinutes__c` on `JobStep__mdt` — orchestrator marks overdue Running steps Failed |
+| Failure notifications | `NotificationEmail__c` on `JobPipeline__mdt` — email sent automatically on any terminal failure |
 
 ---
 
@@ -126,11 +137,15 @@ The Job Scheduler is a **config-driven Apex job orchestration framework**. Execu
 | Class | Role |
 |-------|------|
 | `JobPipelineScheduler` | Entry point — `runNow()`, `registerSchedule()`, Schedulable |
-| `JobOrchestrator` | DAG evaluation, step dispatch, run lifecycle management |
+| `JobOrchestrator` | DAG evaluation, step dispatch, timeout watchdog, run lifecycle management |
 | `JobDispatcher` | Instantiates the job class, creates `JobStepExecution__c`, calls `enqueueJob`/`executeBatch` |
 | `JobDependencyResolver` | Pure DAG logic — `getReadySteps()`, cycle detection |
 | `JobQueueableWrapper` | Wraps Queueable jobs, handles success/failure, publishes event |
 | `JobBatchWrapper` | Wraps Batch jobs, accumulates counts, publishes event in finish() |
+| `JobRetryHandler` | Evaluates `JobRetryPolicy__mdt`; marks step `Retrying` and schedules re-dispatch, or permanently fails it |
+| `JobRetryScheduler` | One-shot `Schedulable` fired for delayed retries; re-dispatches the step at the configured future time |
+| `JobRetryDispatchQueueable` | Thin `Queueable` for immediate retries; avoids calling `Database.executeBatch` from inside a Batch `finish()` |
+| `JobNotificationService` | Sends a plain-text failure notification email to `NotificationEmail__c` when a pipeline closes as Failed |
 | `JobExecutionContext` | Value object passed to every job — parameters, sharedContext, IDs |
 | `ISchedulableJob` | Interface every job class must implement |
 
@@ -171,6 +186,28 @@ The Job Scheduler is a **config-driven Apex job orchestration framework**. Execu
                                UPDATE JobPipelineRun__c.ContextData__c (sharedContext JSON)
                                EventBus.publish(JobCompletionEvent__e)
          │
+         ├── (FAILURE PATH) ─────────────────────────────────────────────────────────┐
+         │                                                                            │
+         │   5a. STEP FAILS — JobRetryHandler.handleFailure() is called              │
+         │       ┌── RetryPolicy present AND attempts remaining ──────────────┐      │
+         │       │   UPDATE JobStepExecution__c Status = Retrying             │      │
+         │       │   If RetryDelaySeconds > 0:                                │      │
+         │       │     System.schedule(JobRetryScheduler) + publish event     │      │
+         │       │   If RetryDelaySeconds = 0:                                │      │
+         │       │     System.enqueueJob(JobRetryDispatchQueueable)           │      │
+         │       │     → re-dispatches the step at attempt + 1                │      │
+         │       └── No policy OR retries exhausted ─────────────────────────┘      │
+         │           UPDATE JobStepExecution__c Status = Failed                      │
+         │           EventBus.publish(JobCompletionEvent__e { IsSuccess=false })     │
+         │               │                                                           │
+         │               ▼                                                           │
+         │       5b. ORCHESTRATOR RE-EVALUATES                                       │
+         │           If OnStepFailure = AbortPipeline:                               │
+         │             → closeRunAndNotify()                                         │
+         │             → JobNotificationService.notifyFailure()  (email sent)        │
+         │           If OnStepFailure = ContinueOnError:                             │
+         │             → skips failed branch, continues with remaining steps         │
+         └────────────────────────────────────────────────────────────────────────────┘
          ▼
 6. PLATFORM EVENT FIRES  (new transaction — Queueable depth resets to 0)
    JobCompletionTrigger.on JobCompletionEvent__e
@@ -249,6 +286,19 @@ To verify: **Setup → Scheduled Jobs** — you should see `Pipeline: Nightly Da
 
 > This trigger is the bridge between step completion and orchestrator re-entry.
 > If it is inactive or missing, the pipeline will stop after the first step.
+
+### 4.6 Configure Failure Notification Email (optional)
+
+To receive an email whenever a pipeline run closes as Failed:
+
+1. Go to **Setup → Custom Metadata Types → Job Pipeline → Manage Records**
+2. Click **Edit** next to the pipeline you want to monitor
+3. Set **Notification Email** to the recipient address (e.g. `ops@company.com`)
+4. **Save**
+
+The email includes the pipeline name, run ID, failure reason, and a per-step status summary with error messages. Email delivery is attempted via `Messaging.sendEmail`; a failed delivery is caught and debug-logged so it never blocks the pipeline state update.
+
+> In **sandbox** orgs, email delivery is suppressed by default. The send call still succeeds without throwing.
 
 ---
 
@@ -746,7 +796,13 @@ for (JobStepExecution__c e : [
 | `CircularDependencyException` | A dependency chain forms a cycle (A→B→A) | Review `JobDependency__mdt` records; remove the circular edge |
 | Pipeline deadlocked — status never `Completed` | A step is Failed with `ContinueOnError` but its dependents also depend on an unreachable path | Query `JobExecutionLog__c` for `Pipeline deadlocked` errors; check dependency config |
 | `SOQL row retrieved without querying field` runtime error | A field queried inside the orchestrator was not included in its SOQL | File a bug — should not occur in normal operation |
-| Steps running more than once | Retry policy fired, or duplicate Platform Events triggered duplicate orchestrator passes | Check `AttemptNumber__c` on `JobStepExecution__c`; review `JobRetryPolicy__mdt` settings |
+| Steps running more than once | Retry policy fired | Check `AttemptNumber__c` on `JobStepExecution__c` to see how many attempts were made; review `JobRetryPolicy__mdt.MaxRetries__c` |
+| Step stuck in `Retrying` status, never re-runs | Delayed retry scheduler job was aborted or org hit the 100-scheduled-job limit | Check **Setup → Scheduled Jobs** for `Retry_<StepName>_*` entries; abort stale jobs and re-trigger manually |
+| Step shows `Failed` even though a retry policy exists | `RetryPolicy__c` on the step CMT is blank (no policy linked) | Edit the `JobStep__mdt` record → set **Retry Policy** to the desired `JobRetryPolicy__mdt` |
+| Step retries exhausted but `ErrorMessage__c` does not mention retry limit | The retry count reached `MaxRetries__c` on attempt 1 (MaxRetries set to 1) | Increase `MaxRetries__c` on the linked `JobRetryPolicy__mdt` record |
+| No failure notification email received | `NotificationEmail__c` is blank on the pipeline CMT, or org email delivery is sandboxed | Set `NotificationEmail__c` on `JobPipeline__mdt`; in sandbox, emails are suppressed by default |
+| Step timed out too quickly | `TimeoutMinutes__c` on the step CMT is too low for the data volume | Increase `TimeoutMinutes__c` on the `JobStep__mdt` record, or set it to blank (no timeout) |
+| Timeout watchdog never fires | Orchestrator has not been re-entered after the step started | The watchdog runs at the start of each orchestrator pass; if no event fires (e.g. stuck batch), the timeout is evaluated on the next re-entry triggered by another step completing |
 
 ---
 
@@ -837,3 +893,144 @@ for (JobStepExecution__c e : [
 | Heap size (6 MB sync / 12 MB async) | Large shared context | `ContextData__c` is SOQL-loaded per step; context not held in memory across transactions |
 | DML rows (10,000) | Large batch executes | Each batch chunk is a separate transaction; DML limits apply per chunk, not per pipeline |
 | Platform Event publish per transaction (150) | Many parallel steps completing at once | One event per step; well within limits for normal pipeline sizes |
+| Scheduled jobs per org (100) | Delayed retries create one-shot scheduled jobs | Each `JobRetryScheduler` fires once then is deleted automatically; monitor **Setup → Scheduled Jobs** for `Retry_*` accumulation during heavy failure periods |
+| `Database.executeBatch` from Batch `finish()` (not allowed) | Immediate retry of a Batch step would violate governor limits | `JobRetryDispatchQueueable` is enqueued instead; it calls `Database.executeBatch` in its own transaction |
+| Single email sends per day (varies by org edition) | Failure notifications | One email per failed pipeline run; stays well within limits unless the same pipeline fails hundreds of times per day |
+
+---
+
+## 14. Retry, Timeout & Failure Notifications
+
+### 14.1 How Retry Works
+
+When a step fails (exception in Queueable mode, or batch errors in Batch mode), the wrapper calls `JobRetryHandler.handleFailure()`. The handler checks the step's linked `JobRetryPolicy__mdt` and takes one of three paths:
+
+```
+Step fails
+    │
+    ├── No RetryPolicy__c linked on the step
+    │       → Status = Failed immediately
+    │       → JobCompletionEvent__e published (IsSuccess=false)
+    │
+    ├── RetryPolicy linked, currentAttempt < MaxRetries
+    │       → Status = Retrying  ← NON-TERMINAL (pipeline keeps running)
+    │       │
+    │       ├── RetryDelaySeconds = 0
+    │       │       → System.enqueueJob(JobRetryDispatchQueueable)
+    │       │         step re-dispatches at attempt + 1 immediately
+    │       │
+    │       └── RetryDelaySeconds > 0
+    │               → System.schedule(JobRetryScheduler, cronAt(now + delay))
+    │               → JobCompletionEvent__e published (so orchestrator sees Retrying)
+    │                 step re-dispatches at attempt + 1 after the delay
+    │
+    └── RetryPolicy linked, currentAttempt >= MaxRetries
+            → Status = Failed (retry limit reached)
+            → JobCompletionEvent__e published (IsSuccess=false)
+```
+
+**Key design decisions:**
+
+- `Retrying` is a **non-terminal status**. The orchestrator's `AbortPipeline` logic never fires while a step is Retrying. `isPipelineComplete` returns `false`, so the run stays open.
+- Each retry creates a **new `JobStepExecution__c`** record at `AttemptNumber + 1`, giving a full audit trail of every attempt.
+- Immediate retries use a **Queueable** (not a direct `Database.executeBatch` call) to avoid the Salesforce restriction on calling `executeBatch` from inside a Batch `finish()` context.
+
+### 14.2 Configuring a Retry Policy
+
+**Step 1 — Create a `JobRetryPolicy__mdt` record:**
+
+| Field | Recommended value | Notes |
+|-------|-------------------|-------|
+| Label | `Standard Retry` | Human-readable |
+| Name | `Standard_Retry` | Referenced by `JobStep__mdt.RetryPolicy__c` |
+| Max Retries | `3` | Total attempts = MaxRetries (attempt 1 is the first try) |
+| Retry Delay (seconds) | `0` for immediate, `60` for 1-minute delay | `0` = Queueable, `> 0` = Schedulable |
+| Retry Only On Exceptions | unchecked | If checked, data-only errors (batch failures) skip retry |
+| Retry Exception Types | *(blank = retry on any exception)* | Comma-separated class names, e.g. `CalloutException,DmlException` |
+
+**Step 2 — Link the policy to a step:**
+
+On the `JobStep__mdt` record, set the **Retry Policy** lookup field to `Standard_Retry`.
+
+> A single `JobRetryPolicy__mdt` can be reused across many steps in different pipelines.
+
+**Step 3 — Verify retry behavior:**
+
+After a test failure, query:
+
+```apex
+SELECT StepDeveloperName__c, Status__c, AttemptNumber__c, ErrorMessage__c
+FROM   JobStepExecution__c
+WHERE  PipelineRun__c = '<RUN_ID>'
+ORDER BY StartTime__c ASC;
+```
+
+You should see rows with `Status__c = Retrying` for intermediate attempts and the final `Completed` or `Failed` for the last attempt.
+
+### 14.3 Per-Step Timeout Watchdog
+
+Each `JobStep__mdt` can declare a `TimeoutMinutes__c` value. The orchestrator checks elapsed time at the start of **every orchestrator pass** (i.e., each time a `JobCompletionEvent__e` fires):
+
+```
+For every step where Status = Running:
+  elapsedMinutes = (now - StartTime__c) / 60000
+  if elapsedMinutes >= TimeoutMinutes__c:
+    → UPDATE JobStepExecution__c: Status = Failed, ErrorMessage = "Step timed out after N min."
+    → The failed status feeds into the normal AbortPipeline / ContinueOnError logic
+```
+
+**Important:** the watchdog only fires when the orchestrator is re-entered. A batch step that hangs without completing will be caught the next time *any other step* in the pipeline fires a completion event. For fully isolated single-step pipelines, increase `MaxPipelineRuntime__c` (pipeline-level timeout) as the backup.
+
+**Timeout configuration guidelines:**
+
+| Step type | Recommended `TimeoutMinutes__c` |
+|-----------|--------------------------------|
+| Light Queueable (< 1,000 records) | `5` |
+| Standard Batch | `30` |
+| Heavy Batch (millions of records) | `120` or blank |
+| External callout steps | `10` (callout timeout + buffer) |
+
+Leave `TimeoutMinutes__c` blank to disable the per-step watchdog for that step.
+
+### 14.4 Failure Notification Email
+
+When a pipeline run closes as **Failed** (step failure with AbortPipeline, pipeline-level timeout, or deadlock), `JobOrchestrator` calls `JobNotificationService.notifyFailure()`.
+
+**What the email contains:**
+
+```
+PIPELINE FAILURE NOTIFICATION
+===============================
+
+Pipeline  : Nightly_Data_Sync
+Run ID    : RUN-0042
+Status    : Failed
+Started   : 2026-04-08 02:00:01
+Ended     : 2026-04-08 02:14:33
+Reason    : Step Sync_Contacts failed after 3 attempts
+
+STEP SUMMARY
+────────────
+[Completed] Sync_Accounts (attempt 1)
+[Retrying]  Sync_Contacts (attempt 1)
+  Error: Connection timeout
+[Retrying]  Sync_Contacts (attempt 2)
+  Error: Connection timeout
+[Failed]    Sync_Contacts (attempt 3)
+  Error: Retry limit reached (3 attempts). Last error: Connection timeout
+
+View run in Salesforce:
+https://yourorg.my.salesforce.com/a0X...
+```
+
+**Configuration:**
+
+| Setting | Where | Notes |
+|---------|-------|-------|
+| `NotificationEmail__c` on `JobPipeline__mdt` | Pipeline CMT record | Leave blank to disable notifications for that pipeline |
+
+**Behaviour notes:**
+
+- If `sendEmail` throws (e.g. invalid address, org email limits reached), the exception is caught and debug-logged. The pipeline state update always completes regardless.
+- One email is sent per terminal failure event — not per retry attempt.
+- In **sandbox** orgs, `Messaging.sendEmail` succeeds without actually delivering the email unless sandbox email delivery is enabled in Email Deliverability settings.

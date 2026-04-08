@@ -10,15 +10,17 @@
  *   • JobCompletionTrigger re-enqueues this every time a step completes or fails.
  *
  * Each pass:
- *   1. Guard: exit immediately if the run is already terminal or cancelled.
- *   2. Transition run from Queued → Running on the very first pass.
- *   3. Load CMT config (pipeline + steps + dependencies).
- *   4. Load runtime state (all step executions for this run).
- *   5. Compute which steps are ready via JobDependencyResolver.
- *   6. Apply pipeline failure policy (AbortPipeline vs ContinueOnError).
- *   7. Dispatch all ready steps (respecting MaxConcurrentSteps__c and the
- *      50-enqueueJob-per-transaction governor limit).
- *   8. If nothing is ready and nothing is running, close the pipeline.
+ *   1.  Guard: exit immediately if the run is already terminal or cancelled.
+ *   2.  Transition run from Queued → Running on the very first pass.
+ *   3.  Load CMT config (pipeline + steps + dependencies).
+ *   4.  Load runtime state (all step executions for this run).
+ *   5.  Phase 6: Per-step timeout watchdog — mark overdue Running steps as Failed.
+ *   6.  Compute which steps are ready via JobDependencyResolver.
+ *   7.  Apply pipeline failure policy (AbortPipeline vs ContinueOnError).
+ *   8.  Dispatch all ready steps (respecting MaxConcurrentSteps__c and the
+ *       50-enqueueJob-per-transaction governor limit).
+ *   9.  If nothing is ready and nothing is running, close the pipeline.
+ *   10. Phase 5: Send failure notification email on any terminal failure.
  */
 public without sharing class JobOrchestrator implements Queueable {
 
@@ -32,7 +34,8 @@ public without sharing class JobOrchestrator implements Queueable {
 
         // ── 1. Load run record ───────────────────────────────────────────────
         JobPipelineRun__c run = [
-            SELECT Id, Pipeline__c, Status__c, ContextData__c, StartTime__c
+            SELECT Id, Name, Pipeline__c, Status__c, ContextData__c,
+                   StartTime__c, EndTime__c
             FROM   JobPipelineRun__c
             WHERE  Id = :pipelineRunId
             LIMIT  1
@@ -47,7 +50,8 @@ public without sharing class JobOrchestrator implements Queueable {
 
         // ── 2. Load pipeline CMT config ──────────────────────────────────────
         JobPipeline__mdt pipelineCfg = [
-            SELECT DeveloperName, OnStepFailure__c, MaxConcurrentSteps__c, MaxPipelineRuntime__c
+            SELECT DeveloperName, OnStepFailure__c, MaxConcurrentSteps__c,
+                   MaxPipelineRuntime__c, NotificationEmail__c
             FROM   JobPipeline__mdt
             WHERE  DeveloperName = :run.Pipeline__c
             LIMIT  1
@@ -55,14 +59,15 @@ public without sharing class JobOrchestrator implements Queueable {
 
         // Check wall-clock timeout before doing anything
         if (isPipelineTimedOut(run, pipelineCfg)) {
-            closeRun(run, 'Failed');
-            log(run.Id, null, 'ERROR', 'Pipeline exceeded MaxPipelineRuntime of ' + pipelineCfg.MaxPipelineRuntime__c + ' minutes. Aborting.');
+            String timeoutMsg = 'Pipeline exceeded MaxPipelineRuntime of '
+                              + pipelineCfg.MaxPipelineRuntime__c + ' minutes. Aborting.';
+            closeRunAndNotify(run, 'Failed', pipelineCfg, timeoutMsg);
             return;
         }
 
         // ── 3. Transition Queued → Running ───────────────────────────────────
         if (run.Status__c == 'Queued') {
-            run.Status__c  = 'Running';
+            run.Status__c    = 'Running';
             run.StartTime__c = System.now();
             update run;
         }
@@ -85,9 +90,9 @@ public without sharing class JobOrchestrator implements Queueable {
         ];
 
         // ── 5. Build step status map from latest execution records ───────────
-        //    ORDER BY AttemptNumber__c DESC so we pick up the most recent attempt.
+        //    ORDER BY AttemptNumber__c DESC so the first occurrence per step = latest attempt.
         List<JobStepExecution__c> executions = [
-            SELECT StepDeveloperName__c, Status__c, AttemptNumber__c
+            SELECT Id, StepDeveloperName__c, Status__c, AttemptNumber__c, StartTime__c
             FROM   JobStepExecution__c
             WHERE  PipelineRun__c = :pipelineRunId
             ORDER BY AttemptNumber__c DESC
@@ -106,11 +111,20 @@ public without sharing class JobOrchestrator implements Queueable {
             }
         }
 
+        // ── Phase 6: Per-step timeout watchdog ───────────────────────────────
+        // Check if any Running step has exceeded its TimeoutMinutes__c threshold.
+        // Timed-out steps are marked Failed; the status map is updated so the
+        // AbortPipeline / ContinueOnError logic below picks them up immediately.
+        List<String> timedOutSteps = checkStepTimeouts(steps, executions, run.Id);
+        for (String name : timedOutSteps) {
+            stepStatusByName.put(name, 'Failed');
+            inProgressSteps.remove(name);
+        }
+
         // ── 6. Check for terminal failure with AbortPipeline policy ─────────
         if (pipelineCfg.OnStepFailure__c == 'AbortPipeline' &&
             stepStatusByName.values().contains('Failed')) {
-            closeRun(run, 'Failed');
-            log(run.Id, null, 'ERROR',
+            closeRunAndNotify(run, 'Failed', pipelineCfg,
                 'Pipeline aborted — a step failed and OnStepFailure is AbortPipeline.');
             return;
         }
@@ -122,7 +136,6 @@ public without sharing class JobOrchestrator implements Queueable {
             );
             if (!unreachable.isEmpty()) {
                 skipSteps(unreachable, pipelineRunId);
-                // Update local status map so the completion check below is accurate
                 for (String name : unreachable) {
                     stepStatusByName.put(name, 'Skipped');
                 }
@@ -132,10 +145,10 @@ public without sharing class JobOrchestrator implements Queueable {
         // ── 8. Check if pipeline is fully complete ───────────────────────────
         if (isPipelineComplete(steps, stepStatusByName)) {
             Boolean hasFailures = stepStatusByName.values().contains('Failed');
-            closeRun(run, hasFailures ? 'Failed' : 'Completed');
-            log(run.Id, null, 'INFO',
-                'Pipeline ' + run.Pipeline__c + ' ' +
-                (hasFailures ? 'completed with failures.' : 'completed successfully.'));
+            String  finalStatus = hasFailures ? 'Failed' : 'Completed';
+            String  completionMsg = 'Pipeline ' + run.Pipeline__c + ' '
+                                  + (hasFailures ? 'completed with failures.' : 'completed successfully.');
+            closeRunAndNotify(run, finalStatus, pipelineCfg, completionMsg);
             return;
         }
 
@@ -144,13 +157,11 @@ public without sharing class JobOrchestrator implements Queueable {
             steps, dependencies, stepStatusByName
         );
 
-        // Nothing ready and nothing running → deadlock (should not happen with
-        // correct ContinueOnError handling above, but guard defensively)
+        // Nothing ready and nothing running → deadlock
         if (readyNames.isEmpty() && inProgressSteps.isEmpty()) {
-            closeRun(run, 'Failed');
-            log(run.Id, null, 'ERROR',
-                'Pipeline deadlocked — no steps are ready and none are in progress. ' +
-                'Check for configuration issues in JobDependency__mdt.');
+            closeRunAndNotify(run, 'Failed', pipelineCfg,
+                'Pipeline deadlocked — no steps are ready and none are in progress. '
+              + 'Check for configuration issues in JobDependency__mdt.');
             return;
         }
 
@@ -162,7 +173,7 @@ public without sharing class JobOrchestrator implements Queueable {
 
         Integer maxDispatch = (pipelineCfg.MaxConcurrentSteps__c != null)
             ? Integer.valueOf(pipelineCfg.MaxConcurrentSteps__c)
-            : 50; // hard cap = Salesforce enqueueJob limit per transaction
+            : 50;
         maxDispatch = Math.min(maxDispatch, 50);
 
         Integer dispatched = 0;
@@ -185,12 +196,66 @@ public without sharing class JobOrchestrator implements Queueable {
 
     // ─── Private helpers ────────────────────────────────────────────────────────
 
+    /**
+     * Phase 6 — Per-step timeout watchdog.
+     * Finds Running step executions that have exceeded their TimeoutMinutes__c limit,
+     * marks them Failed, and returns the list of timed-out step names.
+     */
+    private List<String> checkStepTimeouts(
+        List<JobStep__mdt>        steps,
+        List<JobStepExecution__c> executions,
+        Id                        runId
+    ) {
+        // Build a map of step DeveloperName → TimeoutMinutes__c (skip steps with no timeout)
+        Map<String, Decimal> timeoutByStep = new Map<String, Decimal>();
+        for (JobStep__mdt s : steps) {
+            if (s.TimeoutMinutes__c != null) {
+                timeoutByStep.put(s.DeveloperName, s.TimeoutMinutes__c);
+            }
+        }
+        if (timeoutByStep.isEmpty()) return new List<String>();
+
+        // Build map of step name → latest execution (ORDER BY AttemptNumber DESC, so first = latest)
+        Map<String, JobStepExecution__c> latestByStep = new Map<String, JobStepExecution__c>();
+        for (JobStepExecution__c exec : executions) {
+            if (!latestByStep.containsKey(exec.StepDeveloperName__c)) {
+                latestByStep.put(exec.StepDeveloperName__c, exec);
+            }
+        }
+
+        List<String>                timedOut = new List<String>();
+        List<JobStepExecution__c>   toFail   = new List<JobStepExecution__c>();
+
+        for (String stepName : latestByStep.keySet()) {
+            JobStepExecution__c exec = latestByStep.get(stepName);
+
+            if (exec.Status__c    != 'Running')              continue;
+            if (!timeoutByStep.containsKey(stepName))        continue;
+            if (exec.StartTime__c == null)                   continue;
+
+            Long elapsedMinutes = (System.now().getTime() - exec.StartTime__c.getTime()) / 60000;
+            Decimal limitMinutes = timeoutByStep.get(stepName);
+
+            if (elapsedMinutes >= Integer.valueOf(limitMinutes)) {
+                String msg = 'Step timed out after ' + elapsedMinutes
+                           + ' min (limit: ' + limitMinutes + ' min).';
+                exec.Status__c       = 'Failed';
+                exec.EndTime__c      = System.now();
+                exec.ErrorMessage__c = msg;
+                toFail.add(exec);
+                timedOut.add(stepName);
+                log(runId, exec.Id, 'ERROR', stepName + ': ' + msg);
+            }
+        }
+
+        if (!toFail.isEmpty()) update toFail;
+        return timedOut;
+    }
+
     private Boolean isPipelineComplete(
         List<JobStep__mdt> steps,
         Map<String, String> stepStatusByName
     ) {
-        // Terminal statuses: Completed, Failed, Skipped
-        // Non-terminal: null (never started), Pending, Running, Retrying
         for (JobStep__mdt step : steps) {
             String status = stepStatusByName.get(step.DeveloperName);
             if (status == null       ||
@@ -204,23 +269,33 @@ public without sharing class JobOrchestrator implements Queueable {
     }
 
     private Boolean isPipelineTimedOut(JobPipelineRun__c run, JobPipeline__mdt cfg) {
-        if (cfg.MaxPipelineRuntime__c == null || run.StartTime__c == null) {
-            return false;
-        }
+        if (cfg.MaxPipelineRuntime__c == null || run.StartTime__c == null) return false;
         Long elapsedMinutes = (System.now().getTime() - run.StartTime__c.getTime()) / 60000;
         return elapsedMinutes > cfg.MaxPipelineRuntime__c;
     }
 
-    private void closeRun(JobPipelineRun__c run, String finalStatus) {
+    /**
+     * Closes the run, logs the reason, and — on failure — sends a notification email.
+     * Phase 5: notification is wired in here so every failure path is covered
+     * without duplicating calls at each site.
+     */
+    private void closeRunAndNotify(
+        JobPipelineRun__c run,
+        String            finalStatus,
+        JobPipeline__mdt  cfg,
+        String            reason
+    ) {
         run.Status__c  = finalStatus;
         run.EndTime__c = System.now();
         update run;
+
+        log(run.Id, null, finalStatus == 'Failed' ? 'ERROR' : 'INFO', reason);
+
+        if (finalStatus == 'Failed') {
+            JobNotificationService.notifyFailure(run, cfg, reason);
+        }
     }
 
-    /**
-     * Inserts Skipped JobStepExecution__c records for steps that can never run
-     * because an upstream dependency failed.
-     */
     private void skipSteps(List<String> stepNames, Id runId) {
         List<JobStepExecution__c> toInsert = new List<JobStepExecution__c>();
         for (String name : stepNames) {
@@ -233,9 +308,7 @@ public without sharing class JobOrchestrator implements Queueable {
                 EndTime__c           = System.now()
             ));
         }
-        if (!toInsert.isEmpty()) {
-            insert toInsert;
-        }
+        if (!toInsert.isEmpty()) insert toInsert;
     }
 
     private void log(Id runId, Id stepExecId, String level, String message) {
